@@ -1,0 +1,60 @@
+{
+  "entities": {
+    "user": {
+      "title": "User",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "role": { "type": "string", "enum": ["student", "employee", "neutral"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "decision": {
+      "title": "Decision",
+      "description": "A saved decision analysis",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "prompt": { "type": "string" },
+        "agentId": { "type": "string" },
+        "intuition": { "type": "number" },
+        "result": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "prompt", "result", "createdAt"]
+    },
+    "feedback": {
+      "title": "Feedback",
+      "description": "User feedback on decision analysis accuracy and usefulness",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "decisionId": { "type": "string" },
+        "accuracy": { "type": "number", "description": "Rating from 1-5" },
+        "usefulness": { "type": "number", "description": "Rating from 1-5" },
+        "comment": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "decisionId", "accuracy", "usefulness", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "user",
+      "description": "User profiles"
+    },
+    "/decisions/{decisionId}": {
+      "schema": "decision",
+      "description": "Historical decision analyses"
+    },
+    "/feedback/{feedbackId}": {
+      "schema": "feedback",
+      "description": "User feedback for model improvement"
+    }
+  }
+}

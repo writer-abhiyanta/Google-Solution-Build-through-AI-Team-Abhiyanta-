@@ -1,0 +1,45 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidUser(data) {
+      return data.uid == request.auth.uid &&
+             data.email is string &&
+             data.role in ['student', 'employee', 'neutral'];
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow create: if isOwner(userId) && isValidId(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidId(userId) && isValidUser(request.resource.data) &&
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'photoURL', 'role']);
+    }
+
+    match /decisions/{decisionId} {
+      allow get: if isSignedIn() && isValidId(decisionId) && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(decisionId) && request.resource.data.userId == request.auth.uid;
+    }
+
+    match /feedback/{feedbackId} {
+      allow create: if isSignedIn() && isValidId(feedbackId) && request.resource.data.userId == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(feedbackId) && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+  }
+}
