@@ -9,37 +9,102 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
-    }
-
-    function isValidUser(data) {
-      return data.uid == request.auth.uid &&
-             data.email is string &&
-             data.role in ['student', 'employee', 'neutral'];
-    }
-
     function isValidId(id) {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // User profile validation
+    function isValidUser(data) {
+      return data.keys().hasAll(['role', 'updatedAt']) &&
+             data.keys().size() == 2 &&
+             data.role is string && (data.role == 'student' || data.role == 'employee') &&
+             data.updatedAt == request.time;
+    }
+
+    function isValidUserUpdate(data) {
+      return data.role is string && (data.role == 'student' || data.role == 'employee') &&
+             data.updatedAt == request.time;
+    }
+
     match /users/{userId} {
-      allow get: if isSignedIn() && isValidId(userId);
-      allow create: if isOwner(userId) && isValidId(userId) && isValidUser(request.resource.data);
-      allow update: if isOwner(userId) && isValidId(userId) && isValidUser(request.resource.data) &&
-                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'photoURL', 'role']);
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow create: if isSignedIn() && isValidId(userId) && request.auth.uid == userId && isValidUser(incoming());
+      allow update: if isSignedIn() && isValidId(userId) && request.auth.uid == userId && 
+                       isValidUserUpdate(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'updatedAt']);
+    }
+
+    // Decision validation
+    function isValidDecision(data) {
+      return data.keys().hasAll(['userId', 'prompt', 'agentId', 'intuition', 'result', 'createdAt']) &&
+             data.keys().size() == 6 &&
+             data.userId == request.auth.uid &&
+             data.prompt is string && data.prompt.size() <= 4000 &&
+             data.agentId is string && data.agentId.size() <= 128 &&
+             data.intuition is number &&
+             data.result is map &&
+             data.createdAt == request.time;
     }
 
     match /decisions/{decisionId} {
       allow get: if isSignedIn() && isValidId(decisionId) && resource.data.userId == request.auth.uid;
       allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
-      allow create: if isSignedIn() && isValidId(decisionId) && request.resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && isValidDecision(incoming()) && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    // Feedback validation
+    function isValidFeedback(data) {
+      return data.keys().hasAll(['userId', 'decisionId', 'accuracy', 'usefulness', 'comment', 'createdAt']) &&
+             data.keys().size() == 6 &&
+             data.userId == request.auth.uid &&
+             data.decisionId is string && data.decisionId.size() <= 128 &&
+             data.accuracy is number &&
+             data.usefulness is number &&
+             data.comment is string && data.comment.size() <= 4000 &&
+             data.createdAt == request.time;
     }
 
     match /feedback/{feedbackId} {
-      allow create: if isSignedIn() && isValidId(feedbackId) && request.resource.data.userId == request.auth.uid;
       allow get: if isSignedIn() && isValidId(feedbackId) && resource.data.userId == request.auth.uid;
       allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && isValidFeedback(incoming()) && 
+                    exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+                    exists(/databases/$(database)/documents/decisions/$(incoming().decisionId));
+    }
+    // Session validation
+    function isValidSession(data) {
+      return data.keys().hasAll(['creatorId', 'prompt', 'agentId', 'intuition', 'result', 'createdAt', 'updatedAt']) &&
+             data.keys().size() == 7 &&
+             data.creatorId == request.auth.uid &&
+             data.prompt is string && data.prompt.size() <= 4000 &&
+             data.agentId is string && data.agentId.size() <= 128 &&
+             data.intuition is number &&
+             (data.result == null || data.result is map) &&
+             data.createdAt == request.time &&
+             data.updatedAt == request.time;
+    }
+
+    function isValidSessionUpdate(data) {
+      return data.prompt is string && data.prompt.size() <= 4000 &&
+             data.agentId is string && data.agentId.size() <= 128 &&
+             data.intuition is number &&
+             (data.result == null || data.result is map) &&
+             data.updatedAt == request.time;
+    }
+
+    match /sessions/{sessionId} {
+      allow get: if isSignedIn() && isValidId(sessionId);
+      allow list: if false;
+      allow create: if isSignedIn() && isValidSession(incoming()) && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+      allow update: if isSignedIn() && isValidId(sessionId) && 
+                       isValidSessionUpdate(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['prompt', 'agentId', 'intuition', 'result', 'updatedAt']);
     }
   }
 }

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { BookOpen, Briefcase, Heart, Microscope, Palette, Sparkles, Terminal, Zap } from "lucide-react";
+import { BookOpen, Briefcase, Heart, Microscope, Palette, Sparkles, Terminal, Zap, Lightbulb } from "lucide-react";
 import { MicroAgent } from "./types";
 
 export const MICRO_AGENTS: MicroAgent[] = [
@@ -11,7 +11,7 @@ export const MICRO_AGENTS: MicroAgent[] = [
   { id: '2', name: 'Planetary Ephemeris', icon: 'Sparkles', description: 'Pattern recognition & cosmic cycles.', domain: 'Astrology' },
   { id: '3', name: 'Venture Capitalist', icon: 'Briefcase', description: 'ROI, TAM, and market risk analysis.', domain: 'Business' },
   { id: '4', name: 'Visual Composer', icon: 'Palette', description: 'Aesthetic balance & creative impact.', domain: 'Art' },
-  { id: '5', name: 'Code Architect', icon: 'Terminal', description: 'Scalability, modularity & efficiency.', domain: 'Technology' },
+  { id: '5', name: 'Engineering', icon: 'Lightbulb', description: 'Scalability, modularity & efficiency.', domain: 'Technology' },
   { id: '6', name: 'Philosophical Sage', icon: 'Heart', description: 'Ethical implications & deep meaning.', domain: 'Humanities' },
 ];
 
@@ -22,6 +22,7 @@ export const getIcon = (name: string) => {
     case 'Briefcase': return <Briefcase className="w-5 h-5" />;
     case 'Palette': return <Palette className="w-5 h-5" />;
     case 'Terminal': return <Terminal className="w-5 h-5" />;
+    case 'Lightbulb': return <Lightbulb className="w-5 h-5" />;
     case 'Heart': return <Heart className="w-5 h-5" />;
     case 'BookOpen': return <BookOpen className="w-5 h-5" />;
     case 'Zap': return <Zap className="w-5 h-5" />;

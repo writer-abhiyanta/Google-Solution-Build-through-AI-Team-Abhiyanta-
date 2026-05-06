@@ -1,103 +1,126 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
-import { getFirestore, doc, getDoc, setDoc, collection, addDoc, serverTimestamp, query, where, orderBy, onSnapshot, getDocFromServer } from 'firebase/firestore';
+import { getAuth, signInWithPopup, GoogleAuthProvider, signOut as firebaseSignOut, onAuthStateChanged as firebaseOnAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, setDoc, getDoc, collection, addDoc, query, where, onSnapshot, orderBy, serverTimestamp, updateDoc } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { DecisionResult } from '../types';
 
 const app = initializeApp(firebaseConfig);
-export const auth = getAuth(app);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const auth = getAuth(app);
 
-// Validate Connection to Firestore
-async function testConnection() {
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if(error instanceof Error && error.message.includes('the client is offline')) {
-      console.error("Please check your Firebase configuration.");
-    }
-  }
-}
-testConnection();
+const provider = new GoogleAuthProvider();
 
-enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
+export interface UserProfile {
+  role?: 'student' | 'employee';
 }
 
-interface FirestoreErrorInfo {
-  error: string;
-  operationType: OperationType;
-  path: string | null;
-  authInfo: {
-    userId?: string | null;
-    email?: string | null;
-    emailVerified?: boolean | null;
-    isAnonymous?: boolean | null;
-    tenantId?: string | null;
-  }
-}
-
-function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-    },
-    operationType,
-    path
-  }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
-}
-
-const googleProvider = new GoogleAuthProvider();
-
-export const getUserProfile = async (userId: string) => {
-  try {
-    const userDoc = await getDoc(doc(db, 'users', userId));
-    return userDoc.exists() ? userDoc.data() : null;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.GET, 'users/' + userId);
-    return null;
-  }
+export const onAuthStateChanged = (authObj: typeof auth, callback: (user: any | null) => void) => {
+  return firebaseOnAuthStateChanged(authObj, callback);
 };
 
 export const signInWithGoogle = async () => {
   try {
-    const result = await signInWithPopup(auth, googleProvider);
+    const result = await signInWithPopup(auth, provider);
     return result.user;
   } catch (error) {
-    console.error("Error signing in with Google:", error);
+    console.error("Error signing in with Google: ", error);
     throw error;
   }
 };
 
-export const onboardUser = async (user: User, role: 'student' | 'employee' | 'neutral') => {
+export const getUserProfile = async (userId: string) => {
   try {
-    const userRef = doc(db, 'users', user.uid);
-    await setDoc(userRef, {
-      uid: user.uid,
-      email: user.email,
-      displayName: user.displayName,
-      photoURL: user.photoURL,
-      role: role,
-      createdAt: serverTimestamp()
-    });
+    const docRef = doc(db, 'users', userId);
+    const docSnap = await getDoc(docRef);
+    if (docSnap.exists()) {
+      return docSnap.data() as UserProfile;
+    }
+    return null;
   } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, 'users/' + user.uid);
+    console.error("Error fetching user profile:", error);
+    return null;
   }
 };
 
-export const logout = () => signOut(auth);
+export const onboardUser = async (user: any, role: 'student' | 'employee') => {
+  try {
+    const docRef = doc(db, 'users', user.uid);
+    await setDoc(docRef, { role, updatedAt: serverTimestamp() }, { merge: true });
+    return true;
+  } catch (error) {
+    console.error("Error onboarding user: ", error);
+    throw error;
+  }
+};
+
+export const logout = async () => {
+  try {
+    await firebaseSignOut(auth);
+    return true;
+  } catch (error) {
+    console.error("Error logging out: ", error);
+    throw error;
+  }
+};
+
+export const saveDecision = async (userId: string, prompt: string, agentId: string, intuition: number, result: DecisionResult) => {
+  try {
+    const newDocRef = await addDoc(collection(db, 'decisions'), {
+      userId,
+      prompt,
+      agentId,
+      intuition,
+      result,
+      createdAt: serverTimestamp(),
+    });
+    return newDocRef.id;
+  } catch (error) {
+    console.error("Error saving decision: ", error);
+    return null;
+  }
+};
+
+export const createLiveSession = async (userId: string, prompt: string, agentId: string, intuition: number) => {
+  try {
+    const newDocRef = doc(collection(db, 'sessions'));
+    await setDoc(newDocRef, {
+      creatorId: userId,
+      prompt,
+      agentId,
+      intuition,
+      result: null,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    return newDocRef.id;
+  } catch (error) {
+    console.error("Error creating live session", error);
+    return null;
+  }
+};
+
+export const updateLiveSession = async (sessionId: string, data: { prompt?: string, agentId?: string, intuition?: number, result?: any }) => {
+  try {
+    const docRef = doc(db, 'sessions', sessionId);
+    await updateDoc(docRef, {
+      ...data,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    console.error("Error updating live session", error);
+  }
+};
+
+export const subscribeToLiveSession = (sessionId: string, callback: (sessionData: any) => void) => {
+  const docRef = doc(db, 'sessions', sessionId);
+  return onSnapshot(docRef, (docSnap) => {
+    if (docSnap.exists()) {
+      callback(docSnap.data());
+    } else {
+      callback(null);
+    }
+  });
+};
 
 export const getDecisions = (userId: string, callback: (decisions: any[]) => void) => {
   const q = query(
@@ -106,32 +129,18 @@ export const getDecisions = (userId: string, callback: (decisions: any[]) => voi
     orderBy('createdAt', 'desc')
   );
   
-  return onSnapshot(q, (snapshot) => {
-    const decisions = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    }));
+  const unsubscribe = onSnapshot(q, (querySnapshot) => {
+    const decisions: any[] = [];
+    querySnapshot.forEach((doc) => {
+      decisions.push({ id: doc.id, ...doc.data() });
+    });
     callback(decisions);
   }, (error) => {
-    handleFirestoreError(error, OperationType.LIST, 'decisions');
+    console.error("Error fetching decisions: ", error);
+    callback([]);
   });
-};
 
-export const saveDecision = async (userId: string, prompt: string, agentId: string, intuition: number, result: DecisionResult) => {
-  try {
-    const docRef = await addDoc(collection(db, 'decisions'), {
-      userId,
-      prompt,
-      agentId,
-      intuition,
-      result,
-      createdAt: serverTimestamp()
-    });
-    return docRef.id;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, 'decisions');
-    return null;
-  }
+  return unsubscribe;
 };
 
 export const saveFeedback = async (userId: string, decisionId: string, accuracy: number, usefulness: number, comment: string) => {
@@ -142,10 +151,12 @@ export const saveFeedback = async (userId: string, decisionId: string, accuracy:
       accuracy,
       usefulness,
       comment,
-      createdAt: serverTimestamp()
+      createdAt: serverTimestamp(),
     });
+    return true;
   } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, 'feedback');
+    console.error("Error saving feedback: ", error);
+    return false;
   }
 };
 
@@ -157,13 +168,17 @@ export const getFeedbackForDecision = (decisionId: string, userId: string, callb
     orderBy('createdAt', 'desc')
   );
   
-  return onSnapshot(q, (snapshot) => {
-    const feedback = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    }));
+  const unsubscribe = onSnapshot(q, (querySnapshot) => {
+    const feedback: any[] = [];
+    querySnapshot.forEach((doc) => {
+      feedback.push({ id: doc.id, ...doc.data() });
+    });
     callback(feedback);
   }, (error) => {
-    handleFirestoreError(error, OperationType.LIST, 'feedback');
+    console.error("Error fetching feedback: ", error);
+    callback([]);
   });
+
+  return unsubscribe;
 };
+

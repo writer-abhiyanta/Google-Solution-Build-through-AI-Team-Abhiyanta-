@@ -66,8 +66,8 @@ export const exportToPDF = (prompt: string, agentName: string, result: DecisionR
   doc.text('CORE_LOGIC', centerX - 8, centerY + 2);
   
   // Branching Nodes for Swarm
-  result.swarm.forEach((s, i) => {
-    const angle = (i / result.swarm.length) * Math.PI * 2;
+  (Array.isArray(result.swarm) ? result.swarm : []).forEach((s, i) => {
+    const angle = (i / ((Array.isArray(result.swarm) ? result.swarm : []).length || 1)) * Math.PI * 2;
     const distance = 45;
     const nodeX = centerX + Math.cos(angle) * distance;
     const nodeY = centerY + Math.sin(angle) * distance;
@@ -81,11 +81,12 @@ export const exportToPDF = (prompt: string, agentName: string, result: DecisionR
     doc.setDrawColor(emerald[0], emerald[1], emerald[2]);
     doc.rect(nodeX - 10, nodeY - 5, 20, 10);
     doc.setFontSize(6);
-    const shortPersona = s.persona.length > 10 ? s.persona.substring(0, 8) + '..' : s.persona;
+    const personaText = s?.persona || '';
+    const shortPersona = personaText.length > 10 ? personaText.substring(0, 8) + '..' : personaText;
     doc.text(shortPersona.toUpperCase(), nodeX - 8, nodeY + 1);
     
     // Confidence Indicator
-    const scoreLen = (s.score / 100) * 12;
+    const scoreLen = ((s?.score || 0) / 100) * 12;
     doc.setDrawColor(darkEmerald[0], darkEmerald[1], darkEmerald[2]);
     doc.line(nodeX - 6, nodeY + 3, nodeX - 6 + scoreLen, nodeY + 3);
   });
@@ -100,7 +101,8 @@ export const exportToPDF = (prompt: string, agentName: string, result: DecisionR
   
   doc.setFontSize(10);
   doc.setTextColor(50);
-  const splitConsensus = doc.splitTextToSize(result.consensus, 180);
+  const consensusText = typeof result?.consensus === 'string' ? result.consensus : JSON.stringify(result?.consensus || '');
+  const splitConsensus = doc.splitTextToSize(consensusText, 180);
   doc.text(splitConsensus, 14, currentY + 8);
   
   currentY += 8 + (splitConsensus.length * 5) + 15;
@@ -109,7 +111,7 @@ export const exportToPDF = (prompt: string, agentName: string, result: DecisionR
   autoTable(doc, {
     startY: currentY,
     head: [['ADVERSARIAL_PERSONA', 'VERDICT', 'CONFIDENCE', 'REASONING_LOG']],
-    body: result.swarm.map(s => [s.persona.toUpperCase(), s.verdict.toUpperCase(), `${s.score}%`, s.thought]),
+    body: (Array.isArray(result.swarm) ? result.swarm : []).map(s => [(s?.persona || '').toUpperCase(), (s?.verdict || '').toUpperCase(), `${s?.score || 0}%`, s?.thought || '']),
     styles: { fontSize: 8, cellPadding: 3 },
     headStyles: { fillColor: emerald },
     alternateRowStyles: { fillColor: [245, 255, 250] }
@@ -127,7 +129,7 @@ export const exportToPDF = (prompt: string, agentName: string, result: DecisionR
   autoTable(doc, {
     startY: currentY + 5,
     head: [['PHASE_INDEX', 'ACTION_ITEM', 'RISK_VECTORS']],
-    body: result.roadmap.map(r => [r.phase.toUpperCase(), r.action, r.risk]),
+    body: (Array.isArray(result.roadmap) ? result.roadmap : []).map(r => [(r?.phase || '').toUpperCase(), r?.action || '', r?.risk || '']),
     styles: { fontSize: 8, cellPadding: 3 },
     headStyles: { fillColor: [79, 70, 229] }
   });
@@ -144,14 +146,14 @@ export const exportToCSV = (prompt: string, agentName: string, result: DecisionR
   
   csvContent += `SWARM PERSPECTIVES\n`;
   csvContent += `Persona,Verdict,Score,Thought\n`;
-  result.swarm.forEach(s => {
-    csvContent += `${s.persona},${s.verdict},${s.score},"${s.thought.replace(/"/g, '""')}"\n`;
+  (Array.isArray(result.swarm) ? result.swarm : []).forEach(s => {
+    csvContent += `${s?.persona || ''},${s?.verdict || ''},${s?.score || 0},"${(s?.thought || '').replace(/"/g, '""')}"\n`;
   });
   
   csvContent += `\nROADMAP\n`;
   csvContent += `Phase,Action,Risk\n`;
-  result.roadmap.forEach(r => {
-    csvContent += `"${r.phase.replace(/"/g, '""')}","${r.action.replace(/"/g, '""')}","${r.risk.replace(/"/g, '""')}"\n`;
+  (Array.isArray(result.roadmap) ? result.roadmap : []).forEach(r => {
+    csvContent += `"${(r?.phase || '').replace(/"/g, '""')}","${(r?.action || '').replace(/"/g, '""')}","${(r?.risk || '').replace(/"/g, '""')}"\n`;
   });
 
   const encodedUri = encodeURI(csvContent);

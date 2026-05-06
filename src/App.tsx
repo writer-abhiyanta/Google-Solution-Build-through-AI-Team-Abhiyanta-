@@ -54,12 +54,20 @@ import {
 import { analyzeDecision } from './services/gemini';
 import { DecisionResult, MicroAgent } from './types';
 import { MICRO_AGENTS, getIcon } from './constants';
-import { auth, signInWithGoogle, logout, saveDecision, getDecisions, saveFeedback, getUserProfile, onboardUser } from './services/firebase';
-import { onAuthStateChanged, User } from 'firebase/auth';
+import { auth, signInWithGoogle, logout, saveDecision, getDecisions, saveFeedback, getUserProfile, onboardUser, onAuthStateChanged, User, createLiveSession, updateLiveSession, subscribeToLiveSession } from './services/firebase';
 import { exportToPDF, exportToCSV, exportToJSON } from './services/export';
-import { Download, FileText, Table, History, Database, Code } from 'lucide-react';
+import { Download, FileText, Table, History, Database, Code, Filter, Calendar, SlidersHorizontal, Users, Share2, Copy, Check, Award } from 'lucide-react';
 
 import { XAITree } from './components/XAITree';
+
+const GoogleIcon = () => (
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4" />
+    <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" />
+    <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05" />
+    <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335" />
+  </svg>
+);
 
 export default function App() {
   const [prompt, setPrompt] = useState('');
@@ -71,9 +79,22 @@ export default function App() {
   const [detectBiases, setDetectBiases] = useState(true);
   const [user, setUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<any>(null);
-  const [authLoading, setAuthLoading] = useState(true);
+  const [authInitializing, setAuthInitializing] = useState(true);
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
   const [history, setHistory] = useState<any[]>([]);
+  
+  // Live Session Features
+  const [liveSessionId, setLiveSessionId] = useState<string | null>(null);
+  const [sessionShareUrl, setSessionShareUrl] = useState<string | null>(null);
+  const [copiedUrl, setCopiedUrl] = useState(false);
+  const [isCreator, setIsCreator] = useState(false);
+  const isRemoteUpdateRef = React.useRef(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [filterAgentId, setFilterAgentId] = useState<string>('all');
+  const [filterMinScore, setFilterMinScore] = useState<number>(0);
+  const [filterDateRange, setFilterDateRange] = useState<'all' | 'today' | 'week' | 'month'>('all');
   const [showHistory, setShowHistory] = useState(false);
   const [currentDecisionId, setCurrentDecisionId] = useState<string | null>(null);
   const [feedbackAccuracy, setFeedbackAccuracy] = useState(0);
@@ -81,7 +102,6 @@ export default function App() {
   const [feedbackComment, setFeedbackComment] = useState('');
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
   const [feedbackLoading, setFeedbackLoading] = useState(false);
-  const [roleMismatch, setRoleMismatch] = useState<{ requested: string, actual: string } | null>(null);
 
   const fetchProfile = async (uid: string) => {
     const profile = await getUserProfile(uid);
@@ -92,7 +112,7 @@ export default function App() {
   useEffect(() => {
     let unsubHistory: (() => void) | undefined;
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setAuthLoading(true);
+      setAuthInitializing(true);
       if (currentUser) {
         const profile = await fetchProfile(currentUser.uid);
         setUser(currentUser);
@@ -110,7 +130,7 @@ export default function App() {
         }
         setHistory([]);
       }
-      setAuthLoading(false);
+      setAuthInitializing(false);
     });
 
     return () => {
@@ -121,31 +141,92 @@ export default function App() {
     };
   }, []);
 
-  const handleLogin = async (requestedRole: 'student' | 'employee' | 'neutral') => {
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const session = params.get('session');
+    
+    let unsubSession: (() => void) | undefined;
+    
+    if (session) {
+      setLiveSessionId(session);
+      unsubSession = subscribeToLiveSession(session, (data) => {
+        if (!data) return; // session might be deleted
+        // Flag to prevent looping back updates we just received
+        isRemoteUpdateRef.current = true;
+        if (data.prompt !== undefined) setPrompt(data.prompt);
+        if (data.intuition !== undefined) setIntuition(data.intuition);
+        if (data.agentId) {
+            const agent = MICRO_AGENTS.find(a => a.id === data.agentId);
+            if (agent) setSelectedAgent(agent);
+        }
+        if (data.result !== undefined) setResult(data.result);
+        if (user && data.creatorId === user.uid) {
+           setIsCreator(true);
+        } else {
+           setIsCreator(false);
+        }
+        // Small delay to allow react re-render
+        setTimeout(() => { isRemoteUpdateRef.current = false; }, 50);
+      });
+    }
+
+    return () => {
+      if (unsubSession) unsubSession();
+    };
+  }, [user]);
+
+  // Sync back local changes if in session
+  const debouncedSync = React.useMemo(() => {
+     let timeout: any;
+     return (sessionUrlId: string, payload: any) => {
+        if (isRemoteUpdateRef.current) return;
+        clearTimeout(timeout);
+        timeout = setTimeout(() => {
+          updateLiveSession(sessionUrlId, payload);
+        }, 300);
+     };
+  }, []);
+
+  useEffect(() => {
+     if (liveSessionId && !isRemoteUpdateRef.current) {
+        debouncedSync(liveSessionId, {
+           prompt,
+           intuition,
+           agentId: selectedAgent.id,
+           result
+        });
+     }
+  }, [prompt, intuition, selectedAgent, result, liveSessionId, debouncedSync]);
+
+  const handleLogin = async (requestedRole: 'student' | 'employee') => {
     try {
+      setLoginLoading(true);
+      setAuthError(null);
       const loggedInUser = await signInWithGoogle();
       if (loggedInUser) {
-        const profile = await fetchProfile(loggedInUser.uid);
+        let profile = await fetchProfile(loggedInUser.uid);
         
-        if (!profile) {
-          // First time user, onboarding
+        if (!profile || profile.role !== requestedRole) {
+          // If the profile doesn't exist or role is mismatched, fix it
           await onboardUser(loggedInUser, requestedRole);
-          await fetchProfile(loggedInUser.uid);
-        } else if (profile.role !== requestedRole) {
-          // Role mismatch detected
-          setRoleMismatch({ requested: requestedRole, actual: profile.role });
+          profile = await fetchProfile(loggedInUser.uid);
         }
-      }
-    } catch (error) {
-      console.error(error);
-    }
-  };
 
-  const handleConfirmRole = async (confirmedRole: 'student' | 'employee' | 'neutral') => {
-    if (user) {
-      await onboardUser(user, confirmedRole);
-      await fetchProfile(user.uid);
-      setRoleMismatch(null);
+        // Just to be absolutely sure the UI updates sequentially
+        setUser(loggedInUser);
+        setUserProfile(profile);
+      }
+    } catch (error: any) {
+      if (error?.code === 'auth/unauthorized-domain') {
+        setAuthError("This domain is not authorized. If you deployed this app, add this URL to the Firebase Console -> Authentication -> Authorized Domains.");
+      } else if (error?.code === 'auth/popup-closed-by-user' || error?.code === 'auth/popup-blocked') {
+         setAuthError("Sign-in popup was blocked or closed. Please try again. If the issue persists in this preview, try opening the app in a new tab.");
+      } else {
+        setAuthError(error.message || "An error occurred during sign in.");
+      }
+      console.error(error);
+    } finally {
+      setLoginLoading(false);
     }
   };
 
@@ -153,6 +234,7 @@ export default function App() {
     if (!prompt.trim()) return;
     setLoading(true);
     setShowHistory(false);
+    setAnalyzeError(null);
     try {
       const data = await analyzeDecision(prompt, 'Advanced Reasoning', intuition, selectedAgent.domain, detectBiases);
       setResult(data);
@@ -165,8 +247,14 @@ export default function App() {
         const id = await saveDecision(user.uid, prompt, selectedAgent.id, intuition, data);
         setCurrentDecisionId(id);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
+      let errMsg = error.message || "An error occurred during analysis.";
+      try {
+        const parsed = JSON.parse(errMsg);
+        if (parsed && parsed.error) errMsg = parsed.error;
+      } catch (e) {}
+      setAnalyzeError(errMsg);
     } finally {
       setLoading(false);
     }
@@ -175,7 +263,26 @@ export default function App() {
   const filteredHistory = history.filter(item => {
     const q = searchQuery.toLowerCase();
     const agent = MICRO_AGENTS.find(a => a.id === item.agentId)?.name.toLowerCase() || '';
-    return item.prompt.toLowerCase().includes(q) || agent.includes(q);
+    if (q && !item.prompt.toLowerCase().includes(q) && !agent.includes(q)) return false;
+
+    if (filterAgentId !== 'all' && item.agentId !== filterAgentId) return false;
+
+    if (item.result?.finalScore !== undefined) {
+      if (item.result.finalScore < filterMinScore) return false;
+    }
+
+    if (filterDateRange !== 'all') {
+      const date = item.createdAt?.toMillis ? item.createdAt.toMillis() : (item.createdAt?.seconds ? item.createdAt.seconds * 1000 : item.createdAt);
+      if (!date) return true;
+      const now = Date.now();
+      const diff = now - date;
+      const day = 24 * 60 * 60 * 1000;
+      if (filterDateRange === 'today' && diff > day) return false;
+      if (filterDateRange === 'week' && diff > 7 * day) return false;
+      if (filterDateRange === 'month' && diff > 30 * day) return false;
+    }
+
+    return true;
   });
 
   const selectFromHistory = (item: any) => {
@@ -205,7 +312,7 @@ export default function App() {
     }
   };
 
-  if (authLoading) {
+  if (authInitializing) {
     return (
       <div className="min-h-screen bg-slate-950 flex shadow-inner items-center justify-center">
         <div className="w-12 h-12 border-4 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin"></div>
@@ -213,7 +320,7 @@ export default function App() {
     );
   }
 
-  if (!user || !userProfile?.role || roleMismatch) {
+  if (!user || !userProfile?.role) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 font-sans flex flex-col items-center justify-center p-6 relative overflow-hidden">
         {/* Animated Background Elements */}
@@ -246,41 +353,20 @@ export default function App() {
               </div>
             </motion.div>
 
-            {roleMismatch ? (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="space-y-6"
-              >
-                <h2 className="text-4xl lg:text-5xl font-bold leading-tight text-amber-400">
-                  Role Discrepancy <br />Detected.
-                </h2>
-                <p className="text-slate-400 text-lg leading-relaxed max-w-lg">
-                  You attempted to log in as a <span className="text-white font-bold">{roleMismatch.requested}</span>, but your profile is currently assigned as <span className="text-emerald-400 font-bold">{roleMismatch.actual}</span>.
-                </p>
-                <div className="flex items-center gap-4 p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl">
-                  <AlertCircle className="text-amber-500 w-6 h-6" />
-                  <p className="text-xs text-amber-200">
-                    Choosing a new role will update your permanent identity profile in the decision mesh.
-                  </p>
-                </div>
-              </motion.div>
-            ) : (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 0.4 }}
-                className="space-y-6"
-              >
-                <h2 className="text-4xl lg:text-6xl font-bold leading-tight">
-                  Decide with <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-teal-400">Precision.</span><br />
-                  Think with <span className="text-transparent bg-clip-text bg-gradient-to-r from-teal-400 to-emerald-400">Clarity.</span>
-                </h2>
-                <p className="text-slate-400 text-lg leading-relaxed max-w-lg">
-                  The world's first open-innovation platform for cross-disciplinary decision making. Powered by adversarial swarm intelligence.
-                </p>
-              </motion.div>
-            )}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ delay: 0.4 }}
+              className="space-y-6"
+            >
+              <h2 className="text-4xl lg:text-6xl font-bold leading-tight">
+                Decide with <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-teal-400">Precision.</span><br />
+                Think with <span className="text-transparent bg-clip-text bg-gradient-to-r from-teal-400 to-emerald-400">Clarity.</span>
+              </h2>
+              <p className="text-slate-400 text-lg leading-relaxed max-w-lg">
+                The world's first open-innovation platform for cross-disciplinary decision making. Powered by adversarial swarm intelligence.
+              </p>
+            </motion.div>
 
             <motion.div 
               className="grid grid-cols-2 gap-4"
@@ -323,61 +409,54 @@ export default function App() {
                 <Sparkles className="w-6 h-6 text-emerald-500 animate-pulse" />
               </div>
               
-              <div className="mb-10">
+              <div className="mb-8">
                 <h3 className="text-2xl font-bold text-white mb-2">
-                  {roleMismatch ? "Resolve Identity" : user ? "Complete Onboarding" : "Initiate Synchronization"}
+                  Initiate Synchronization
                 </h3>
                 <p className="text-slate-500 text-sm">
-                  {roleMismatch 
-                    ? `Confirm your intended identity profile.` 
-                    : user 
-                      ? "Select your primary role to activate your account." 
-                      : "Choose your identity profile to begin."}
+                  Choose your identity profile to begin.
                 </p>
               </div>
+
+              {authError && (
+                <div className="mb-6 p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-start gap-3">
+                  <ShieldAlert className="w-5 h-5 text-rose-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-sm text-rose-300">{authError}</p>
+                </div>
+              )}
               
               <div className="space-y-4">
                  <button 
-                   onClick={() => roleMismatch ? handleConfirmRole('student') : handleLogin('student')}
-                   className={`w-full py-4 rounded-2xl font-bold flex items-center justify-center gap-4 transition-all active:scale-95 group relative overflow-hidden ${
-                     roleMismatch?.actual === 'student' ? 'bg-emerald-600 text-white' : 'bg-white text-black hover:bg-slate-200'
-                   }`}
+                   onClick={() => handleLogin('student')}
+                   disabled={loginLoading}
+                   className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-800 disabled:cursor-not-allowed text-white rounded-2xl font-bold flex items-center justify-center gap-4 transition-all active:scale-95 shadow-xl shadow-emerald-500/20 group relative overflow-hidden"
                  >
-                    <div className="absolute inset-0 bg-emerald-500/10 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                    <GraduationCap className={`w-6 h-6 ${roleMismatch?.actual === 'student' ? 'text-white' : 'text-emerald-600'} group-hover:rotate-12 transition-transform relative z-10`} />
-                    <span className="relative z-10">Login as Student {roleMismatch?.actual === 'student' && '(Assigned)'}</span>
+                    <div className="absolute inset-0 bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                    {loginLoading ? (
+                      <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                    ) : (
+                      <>
+                        <GoogleIcon />
+                        <GraduationCap className="w-5 h-5 group-hover:rotate-12 transition-transform relative z-10 flex-shrink-0" />
+                        <span className="relative z-10">Login as Student</span>
+                      </>
+                    )}
                  </button>
                  <button 
-                   onClick={() => roleMismatch ? handleConfirmRole('employee') : handleLogin('employee')}
-                   className={`w-full py-4 rounded-2xl font-black flex items-center justify-center gap-4 transition-all active:scale-95 group shadow-xl ${
-                     roleMismatch?.actual === 'employee' ? 'bg-emerald-600 text-white shadow-emerald-600/30' : 'bg-slate-800 text-white border border-slate-700 hover:bg-slate-700'
-                   }`}
+                   onClick={() => handleLogin('employee')}
+                   disabled={loginLoading}
+                   className="w-full py-4 bg-slate-800 border border-slate-700 hover:bg-slate-700 disabled:bg-slate-900 disabled:cursor-not-allowed text-white rounded-2xl font-bold flex items-center justify-center gap-4 transition-all active:scale-95 shadow-xl group"
                  >
-                    <WorkIcon className="w-6 h-6 group-hover:scale-110 transition-transform" />
-                    <span>Login as Employee {roleMismatch?.actual === 'employee' && '(Assigned)'}</span>
-                 </button>
-                 
-                 <div className="flex items-center gap-4 my-6">
-                    <div className="h-[1px] flex-1 bg-slate-800"></div>
-                    <span className="text-[10px] text-slate-600 font-bold uppercase tracking-widest">or</span>
-                    <div className="h-[1px] flex-1 bg-slate-800"></div>
-                 </div>
-                 
-                 <button 
-                   onClick={() => roleMismatch ? handleConfirmRole('neutral') : handleLogin('neutral')}
-                   className="w-full py-4 bg-slate-800/50 text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-700 rounded-2xl font-bold flex items-center justify-center gap-3 transition-all active:scale-95"
-                 >
-                    Continue as Neutral {roleMismatch?.actual === 'neutral' && '(Assigned)'}
-                 </button>
-
-                 {roleMismatch && (
-                   <button 
-                     onClick={() => setRoleMismatch(null)}
-                     className="w-full py-2 bg-transparent text-slate-600 hover:text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-4"
-                   >
-                     Cancel and try again
-                   </button>
-                 )}
+                    {loginLoading ? (
+                      <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                    ) : (
+                      <>
+                        <GoogleIcon />
+                        <WorkIcon className="w-5 h-5 group-hover:scale-110 transition-transform flex-shrink-0 text-amber-400" />
+                        <span>Login as Employee</span>
+                      </>
+                    )}
+                  </button>
               </div>
               
               <div className="mt-10 flex items-center justify-center gap-2 text-slate-600">
@@ -512,6 +591,46 @@ export default function App() {
               <Activity className="w-3 h-3 text-emerald-400 animate-pulse" />
               SENSORS: <span className="text-emerald-400">NOMINAL</span>
             </div>
+            {liveSessionId && (
+              <div className="flex items-center gap-2 px-4 py-2 bg-indigo-900 border border-indigo-500 rounded-full text-[10px] font-black text-indigo-200">
+                <Users className="w-3 h-3 text-indigo-400 animate-pulse" />
+                <span>LIVE SESSION ACTIVE</span>
+              </div>
+            )}
+            {!liveSessionId ? (
+              <button
+                onClick={async () => {
+                   if (!user) return;
+                   const id = await createLiveSession(user.uid, prompt, selectedAgent.id, intuition);
+                   if (id) {
+                     setLiveSessionId(id);
+                     setIsCreator(true);
+                     const url = new URL(window.location.href);
+                     url.searchParams.set('session', id);
+                     window.history.replaceState({}, '', url.toString());
+                   }
+                }}
+                className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-indigo-600 border border-slate-700 hover:border-indigo-400 rounded-full text-[10px] font-black transition-colors"
+                title="Start a collaborative session"
+              >
+                <Share2 className="w-3 h-3" />
+                START LIVE SESSION
+              </button>
+            ) : (
+                <button
+                onClick={() => {
+                   const url = new URL(window.location.href);
+                   url.searchParams.set('session', liveSessionId);
+                   navigator.clipboard.writeText(url.toString());
+                   setCopiedUrl(true);
+                   setTimeout(() => setCopiedUrl(false), 2000);
+                }}
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 border border-indigo-400 rounded-full text-[10px] font-black text-white transition-colors"
+              >
+                {copiedUrl ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                {copiedUrl ? 'COPIED LINK' : 'SHARE LINK'}
+              </button>
+            )}
             <div className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center border border-slate-700 shadow-inner group hover:border-emerald-500 transition-colors cursor-help">
               <Zap className="w-5 h-5 text-amber-400 group-hover:scale-110 transition-transform" />
             </div>
@@ -533,8 +652,59 @@ export default function App() {
                  </button>
               </div>
               
+              <div className="flex flex-col md:flex-row gap-4 mb-6 bg-slate-900/80 border border-slate-800 p-4 rounded-2xl">
+                 <div className="flex-1 flex flex-col gap-2">
+                    <label className="text-[10px] font-black text-slate-500 flex items-center gap-2 uppercase tracking-widest"><Filter className="w-3 h-3"/> Agent ID</label>
+                    <div className="relative">
+                       <select 
+                          className="w-full bg-slate-950 border border-slate-800 rounded-lg py-2.5 pl-3 pr-8 text-xs text-slate-200 appearance-none focus:outline-none focus:border-emerald-500/50 transition-colors cursor-pointer"
+                          value={filterAgentId}
+                          onChange={e => setFilterAgentId(e.target.value)}
+                       >
+                         <option value="all">ALL AGENTS</option>
+                         {MICRO_AGENTS.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                       </select>
+                       <ChevronRight className="w-3 h-3 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2 rotate-90 pointer-events-none" />
+                    </div>
+                 </div>
+                 
+                 <div className="flex-1 flex flex-col gap-2">
+                    <label className="text-[10px] font-black text-slate-500 flex items-center gap-2 uppercase tracking-widest"><Calendar className="w-3 h-3"/> Timeframe</label>
+                    <div className="relative">
+                       <select 
+                          className="w-full bg-slate-950 border border-slate-800 rounded-lg py-2.5 pl-3 pr-8 text-xs text-slate-200 appearance-none focus:outline-none focus:border-emerald-500/50 transition-colors cursor-pointer"
+                          value={filterDateRange}
+                          onChange={e => setFilterDateRange(e.target.value as any)}
+                       >
+                         <option value="all">ALL TIME</option>
+                         <option value="today">PAST 24 HOURS</option>
+                         <option value="week">PAST 7 DAYS</option>
+                         <option value="month">PAST 30 DAYS</option>
+                       </select>
+                       <ChevronRight className="w-3 h-3 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2 rotate-90 pointer-events-none" />
+                    </div>
+                 </div>
+
+                 <div className="flex-1 flex flex-col gap-2">
+                    <label className="text-[10px] font-black text-slate-500 flex items-center justify-between uppercase tracking-widest">
+                      <span className="flex items-center gap-2"><SlidersHorizontal className="w-3 h-3"/> Min Confidence</span>
+                      <span className="text-emerald-400">{filterMinScore}%</span>
+                    </label>
+                    <div className="flex items-center h-full pb-1">
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="100" 
+                        value={filterMinScore}
+                        onChange={e => setFilterMinScore(parseInt(e.target.value))}
+                        className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                      />
+                    </div>
+                 </div>
+              </div>
+
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {(searchQuery ? filteredHistory : history).length > 0 ? (searchQuery ? filteredHistory : history).map((item) => {
+                {filteredHistory.length > 0 ? filteredHistory.map((item) => {
                   const agent = MICRO_AGENTS.find(a => a.id === item.agentId);
                   return (
                     <motion.div 
@@ -550,10 +720,10 @@ export default function App() {
                           </div>
                           <div>
                             <div className="text-[10px] font-black text-white uppercase tracking-widest">{agent?.name || 'Unknown Agent'}</div>
-                            <div className="text-[10px] text-slate-500 font-mono italic">{new Date(item.createdAt?.seconds * 1000).toLocaleDateString()}</div>
+                            <div className="text-[10px] text-slate-500 font-mono italic">{item.createdAt ? new Date(item.createdAt?.toMillis ? item.createdAt.toMillis() : (item.createdAt?.seconds ? item.createdAt.seconds * 1000 : item.createdAt)).toLocaleDateString() : 'Just now'}</div>
                           </div>
                           <div className="ml-auto text-emerald-400 font-black text-xs">
-                            {item.result.finalScore}%
+                            {item.result?.finalScore || 0}%
                           </div>
                        </div>
                        <p className="text-xs text-slate-300 line-clamp-3 mb-4 leading-relaxed italic">"{item.prompt}"</p>
@@ -672,6 +842,15 @@ export default function App() {
                     Synchronize Thoughts
                   </button>
                 </div>
+                
+                {analyzeError && (
+                  <div className="mt-4 p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-start gap-3">
+                    <ShieldAlert className="w-5 h-5 text-rose-400 flex-shrink-0 mt-0.5" />
+                    <p className="text-sm text-rose-300">
+                      <strong>Analysis Failed:</strong> {analyzeError}
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -743,17 +922,17 @@ export default function App() {
                     <div className="flex items-center gap-4 bg-slate-950 p-4 rounded-xl border border-slate-800">
                       <div className="text-right">
                         <div className="text-[10px] text-slate-500 uppercase font-bold">Confidence</div>
-                        <div className="text-2xl font-black text-emerald-400">{result.finalScore}%</div>
+                        <div className="text-2xl font-black text-emerald-400">{result?.finalScore || 0}%</div>
                       </div>
                       <div className="w-[2px] h-10 bg-slate-800"></div>
                       <div className="text-right">
                         <div className="text-[10px] text-slate-500 uppercase font-bold">Alignment</div>
                         <div className={`text-sm font-black transition-colors ${
-                          result.overallAlignment === 'High' ? 'text-emerald-400' :
-                          result.overallAlignment === 'Medium' ? 'text-amber-400' :
+                          result?.overallAlignment === 'High' ? 'text-emerald-400' :
+                          result?.overallAlignment === 'Medium' ? 'text-amber-400' :
                           'text-rose-400'
                         }`}>
-                          {result.overallAlignment}
+                          {typeof result?.overallAlignment === 'string' ? result.overallAlignment : 'Unknown'}
                         </div>
                       </div>
                       <div className="w-[2px] h-10 bg-slate-800"></div>
@@ -789,8 +968,43 @@ export default function App() {
                   </div>
 
                   <p className="text-lg text-slate-200 mt-8 leading-relaxed">
-                    {result.consensus}
+                    {typeof result?.consensus === 'string' ? result.consensus : JSON.stringify(result?.consensus || '')}
                   </p>
+                  
+                  {Array.isArray(result?.grades) && result.grades.length > 0 && (
+                    <div className="mt-10 border-t border-slate-800 pt-8">
+                       <div className="flex items-center gap-3 mb-6">
+                         <div className="p-2 bg-indigo-500/10 rounded-lg text-indigo-400">
+                           <Award className="w-5 h-5" />
+                         </div>
+                         <h3 className="text-xl font-bold">AI Evaluation Scorecard</h3>
+                       </div>
+                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                          {result.grades.map((grade, idx) => (
+                             <div key={idx} className="bg-slate-950 border border-slate-800 rounded-xl p-5 hover:border-indigo-500/30 transition-colors">
+                                <div className="flex items-center justify-between mb-3">
+                                   <div className="text-xs font-black text-slate-400 uppercase tracking-widest">{typeof grade?.category === 'string' ? grade.category : 'Metric'}</div>
+                                   <div className="text-sm font-black text-white">
+                                      <span className={grade?.score >= 8 ? 'text-emerald-400' : grade?.score >= 5 ? 'text-amber-400' : 'text-rose-400'}>{grade?.score || 0}</span>
+                                      <span className="text-slate-600">/10</span>
+                                   </div>
+                                </div>
+                                <div className="h-1.5 w-full bg-slate-900 rounded-full overflow-hidden mb-4">
+                                   <motion.div 
+                                      initial={{ width: 0 }}
+                                      animate={{ width: `${((grade?.score || 0) / 10) * 100}%` }}
+                                      transition={{ duration: 1, delay: 0.2 + (idx * 0.1) }}
+                                      className={`h-full ${grade?.score >= 8 ? 'bg-emerald-500' : grade?.score >= 5 ? 'bg-amber-500' : 'bg-rose-500'}`}
+                                   />
+                                </div>
+                                <p className="text-[11px] text-slate-400 leading-relaxed normal-case">
+                                   {typeof grade?.feedback === 'string' ? grade.feedback : JSON.stringify(grade?.feedback || '')}
+                                </p>
+                             </div>
+                          ))}
+                       </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -814,7 +1028,7 @@ export default function App() {
 
                 <div className="h-[250px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={result.swarm} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                    <BarChart data={Array.isArray(result.swarm) ? result.swarm : []} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                       <XAxis 
                         dataKey="persona" 
@@ -849,12 +1063,12 @@ export default function App() {
                         barSize={60}
                         animationDuration={1500}
                       >
-                        {result.swarm.map((entry, index) => (
+                        {Array.isArray(result.swarm) && result.swarm.map((entry, index) => (
                           <Cell 
                             key={`cell-${index}`} 
                             fill={
-                              entry.persona === 'Pragmatist' ? '#10b981' : 
-                              entry.persona === 'Skeptic' ? '#f43f5e' : 
+                              entry?.persona === 'Pragmatist' ? '#10b981' : 
+                              entry?.persona === 'Skeptic' ? '#f43f5e' : 
                               '#a855f7'
                             } 
                           />
@@ -865,12 +1079,12 @@ export default function App() {
                 </div>
                 
                 <div className="grid grid-cols-3 gap-4 mt-8">
-                  {result.swarm.map((s) => (
-                    <div key={s.persona} className="text-center group">
-                       <div className="text-[10px] font-black text-slate-600 uppercase tracking-tighter mb-1 transition-colors group-hover:text-slate-400">{s.persona}</div>
+                  {(Array.isArray(result.swarm) ? result.swarm : []).map((s, i) => (
+                    <div key={s?.persona || i} className="text-center group">
+                       <div className="text-[10px] font-black text-slate-600 uppercase tracking-tighter mb-1 transition-colors group-hover:text-slate-400">{typeof s?.persona === 'string' ? s.persona : 'Agent'}</div>
                        <div className={`h-1 w-full rounded-full opacity-20 ${
-                         s.persona === 'Pragmatist' ? 'bg-emerald-500' : 
-                         s.persona === 'Skeptic' ? 'bg-rose-500' : 
+                         s?.persona === 'Pragmatist' ? 'bg-emerald-500' : 
+                         s?.persona === 'Skeptic' ? 'bg-rose-500' : 
                          'bg-purple-500'
                        }`}></div>
                     </div>
@@ -880,42 +1094,42 @@ export default function App() {
 
               {/* Swarm Debate */}
               <div className="flex flex-col gap-6">
-                {result.swarm.map((member, i) => (
+                {(Array.isArray(result.swarm) ? result.swarm : []).map((member, i) => (
                   <motion.div 
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: i * 0.1 }}
-                    key={member.persona} 
+                    key={typeof member?.persona === 'string' ? member.persona : i} 
                     className="bg-slate-900 border border-slate-800 p-8 rounded-2xl relative group overflow-hidden flex flex-col gap-6"
                   >
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
                       <div className="flex flex-col md:flex-row md:items-center gap-6">
                         <h4 className="font-bold text-2xl flex items-center gap-3 text-white">
-                           {member.persona === 'Pragmatist' && <BarChart3 className="w-7 h-7 text-emerald-400" />}
-                           {member.persona === 'Skeptic' && <ShieldAlert className="w-7 h-7 text-rose-400" />}
-                           {member.persona === 'Creative' && <Sparkles className="w-7 h-7 text-purple-400" />}
-                           {member.persona}
+                           {member?.persona === 'Pragmatist' && <BarChart3 className="w-7 h-7 text-emerald-400" />}
+                           {member?.persona === 'Skeptic' && <ShieldAlert className="w-7 h-7 text-rose-400" />}
+                           {member?.persona === 'Creative' && <Sparkles className="w-7 h-7 text-purple-400" />}
+                           {typeof member?.persona === 'string' ? member.persona : 'Agent'}
                         </h4>
                         <div className="flex items-center gap-3 bg-slate-950/50 p-2 rounded-xl border border-slate-800/50">
                            <span className={`text-[10px] px-3 py-1 rounded-lg font-black uppercase tracking-wider ${
-                             member.verdict === 'Supportive' ? 'bg-emerald-500/10 text-emerald-400' :
-                             member.verdict === 'Critical' ? 'bg-rose-500/10 text-rose-400' :
+                             member?.verdict === 'Supportive' ? 'bg-emerald-500/10 text-emerald-400' :
+                             member?.verdict === 'Critical' ? 'bg-rose-500/10 text-rose-400' :
                              'bg-amber-500/10 text-amber-400'
                            }`}>
-                             {member.verdict}
+                             {typeof member?.verdict === 'string' ? member.verdict : 'Unknown'}
                            </span>
                            <div className="h-4 w-[1px] bg-slate-800"></div>
                            <div className="flex items-center gap-2 pr-2">
                              <span className={`text-[9px] font-black uppercase tracking-[0.2em] ${
-                               member.alignment === 'High' ? 'text-emerald-400' :
-                               member.alignment === 'Medium' ? 'text-amber-400' :
+                               member?.alignment === 'High' ? 'text-emerald-400' :
+                               member?.alignment === 'Medium' ? 'text-amber-400' :
                                'text-rose-400'
                              }`}>
-                               {member.alignment} Alignment
+                               {typeof member?.alignment === 'string' ? member.alignment : 'Unknown'} Alignment
                              </span>
                              <div className="w-1.5 h-1.5 rounded-full animate-pulse bg-current" style={{ color: 
-                               member.alignment === 'High' ? '#10b981' : 
-                               member.alignment === 'Medium' ? '#f59e0b' : 
+                               member?.alignment === 'High' ? '#10b981' : 
+                               member?.alignment === 'Medium' ? '#f59e0b' : 
                                '#f43f5e' 
                              }}></div>
                            </div>
@@ -932,7 +1146,7 @@ export default function App() {
                     
                     <div className="relative">
                       <div className="absolute top-0 left-0 bottom-0 w-1 bg-gradient-to-b from-emerald-500/50 to-transparent rounded-full opacity-30"></div>
-                      <p className="text-lg text-slate-300 leading-relaxed italic pl-6 py-1">"{member.thought}"</p>
+                      <p className="text-lg text-slate-300 leading-relaxed italic pl-6 py-1">"{typeof member?.thought === 'string' ? member.thought : JSON.stringify(member?.thought || '')}"</p>
                     </div>
                   </motion.div>
                 ))}
@@ -950,11 +1164,11 @@ export default function App() {
                     <h3 className="text-xl font-bold">Cognitive Bias Shield</h3>
                   </div>
                   <div className="space-y-4">
-                    {result.biases.length > 0 ? result.biases.map((bias) => (
-                      <div key={bias.name} className="p-4 bg-slate-950 rounded-lg border border-slate-800 group hover:border-rose-500/30 transition-colors">
+                    {Array.isArray(result.biases) && result.biases.length > 0 ? result.biases.map((bias, i) => (
+                      <div key={typeof bias?.name === 'string' ? bias.name : i} className="p-4 bg-slate-950 rounded-lg border border-slate-800 group hover:border-rose-500/30 transition-colors">
                         <h4 className="text-rose-400 font-bold flex items-center justify-between relative group/bias">
                           <span className="cursor-help underline decoration-rose-500/30 underline-offset-4 decoration-dotted group-hover:decoration-rose-500">
-                            {bias.name}
+                            {typeof bias?.name === 'string' ? bias.name : 'Unknown Bias'}
                           </span>
                           <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-rose-400 transition-transform group-hover:translate-x-1" />
                           
@@ -967,13 +1181,13 @@ export default function App() {
                               <div className="text-[10px] text-rose-400 font-black uppercase tracking-widest">Bias Definition</div>
                             </div>
                             <p className="text-[11px] text-slate-300 leading-relaxed font-medium normal-case">
-                              {bias.definition || 'A cognitive shortcut that can lead to systematic deviations from logic or objective judgment.'}
+                              {typeof bias?.definition === 'string' ? bias.definition : JSON.stringify(bias?.definition || 'A cognitive shortcut that can lead to systematic deviations from logic or objective judgment.')}
                             </p>
                             <div className="absolute -bottom-1.5 left-6 w-3 h-3 bg-slate-900 border-r border-b border-slate-700 rotate-45"></div>
                           </div>
                         </h4>
-                        <p className="text-sm text-slate-200 mt-2">{bias.description}</p>
-                        <div className="mt-3 text-[10px] text-slate-500 font-mono">DETECTED IN: {bias.detectedIn}</div>
+                        <p className="text-sm text-slate-200 mt-2">{typeof bias?.description === 'string' ? bias.description : JSON.stringify(bias?.description || '')}</p>
+                        <div className="mt-3 text-[10px] text-slate-500 font-mono">DETECTED IN: {typeof bias?.detectedIn === 'string' ? bias.detectedIn : JSON.stringify(bias?.detectedIn || '')}</div>
                       </div>
                     )) : (
                       <div className="text-center py-8 text-slate-500 text-sm italic">
@@ -993,7 +1207,7 @@ export default function App() {
                   </div>
                   
                   <div className="flex-1 bg-slate-950 rounded-lg p-6 border border-slate-800 overflow-auto max-h-[500px]">
-                     <XAITree node={result.xaiTree} />
+                     {result.xaiTree && <XAITree node={result.xaiTree} />}
                   </div>
                   {/* END_XAI */}
                 </div>
@@ -1013,7 +1227,7 @@ export default function App() {
 
                   <div className="h-[300px]">
                     <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={result.simulation.labels.map((l, i) => ({ name: l, value: result.simulation.data[i] }))}>
+                      <AreaChart data={(Array.isArray(result.simulation?.labels) ? result.simulation.labels : []).map((l, i) => ({ name: l, value: Array.isArray(result.simulation?.data) ? result.simulation.data[i] || 0 : 0 }))}>
                         <defs>
                           <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
                             <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
@@ -1052,41 +1266,177 @@ export default function App() {
                       <h3 className="text-xl font-bold">Ethical Guardrails</h3>
                    </div>
                    <div className="space-y-4">
-                      {result.ethicalChecks.map((check) => (
-                        <div key={check.framework} className="bg-slate-950 p-5 rounded-xl border border-slate-800 hover:border-slate-700 transition-all group">
+                      {(Array.isArray(result.ethicalChecks) ? result.ethicalChecks : []).map((check, i) => (
+                        <div key={typeof check?.framework === 'string' ? check.framework : i} className="bg-slate-950 p-5 rounded-xl border border-slate-800 hover:border-slate-700 transition-all group">
                            <div className="flex items-center justify-between mb-3">
                               <div className="flex items-center gap-2">
                                 <div className={`p-1.5 rounded-lg ${
-                                  check.alignment === 'High' ? 'bg-emerald-500/10 text-emerald-400' :
-                                  check.alignment === 'Medium' ? 'bg-amber-500/10 text-amber-400' :
+                                  check?.alignment === 'High' ? 'bg-emerald-500/10 text-emerald-400' :
+                                  check?.alignment === 'Medium' ? 'bg-amber-500/10 text-amber-400' :
                                   'bg-rose-500/10 text-rose-400'
                                 }`}>
-                                  {check.alignment === 'High' && <CheckCircle2 className="w-4 h-4" />}
-                                  {check.alignment === 'Medium' && <AlertCircle className="w-4 h-4" />}
-                                  {check.alignment === 'Low' && <XCircle className="w-4 h-4" />}
+                                  {check?.alignment === 'High' ? <CheckCircle2 className="w-4 h-4" /> :
+                                   check?.alignment === 'Medium' ? <AlertCircle className="w-4 h-4" /> :
+                                   <XCircle className="w-4 h-4" />}
                                 </div>
-                                <span className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">{check.framework}</span>
+                                <span className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">{typeof check?.framework === 'string' ? check.framework : 'Framework'}</span>
                               </div>
                               <span className={`text-[10px] px-2 py-0.5 rounded-full font-black ${
-                                check.alignment === 'High' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
-                                check.alignment === 'Medium' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
+                                check?.alignment === 'High' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
+                                check?.alignment === 'Medium' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
                                 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
                               }`}>
-                                {check.alignment} ALIGNMENT
+                                {typeof check?.alignment === 'string' ? check.alignment : 'Unknown'} ALIGNMENT
                               </span>
                            </div>
-                           <div className="space-y-2">
+                           <div className="space-y-3">
+                              <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-800/50">
+                                <p className="text-[11px] text-slate-400 font-medium italic">
+                                  {typeof check?.frameworkDescription === 'string' ? check.frameworkDescription : JSON.stringify(check?.frameworkDescription || '')}
+                                </p>
+                              </div>
                               <h5 className="text-sm font-bold text-slate-100 leading-snug group-hover:text-emerald-400 transition-colors">
-                                {check.summary}
+                                {typeof check?.summary === 'string' ? check.summary : JSON.stringify(check?.summary || '')}
                               </h5>
-                              <p className="text-xs text-slate-400 leading-relaxed">
-                                {check.analysis}
-                              </p>
+                              <div className="p-4 bg-slate-900/30 rounded-xl border border-slate-800/30">
+                                <p className="text-xs text-slate-300 leading-relaxed">
+                                  {typeof check?.analysis === 'string' ? check.analysis : JSON.stringify(check?.analysis || '')}
+                                </p>
+                              </div>
                            </div>
                         </div>
                       ))}
                    </div>
                 </div>
+              </div>
+
+              {/* Emerging Tech: Biometric & Neuromorphic */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-8">
+                  <div className="flex items-center justify-between mb-6">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-emerald-500/10 rounded-lg text-emerald-400">
+                        <Activity className="w-5 h-5" />
+                      </div>
+                      <h3 className="text-xl font-bold">Ambient IoT & Biometrics</h3>
+                    </div>
+                    <div className="flex items-center gap-2">
+                       <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                       <span className="text-[10px] text-emerald-500 font-mono tracking-widest uppercase">Live Sync Active</span>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                     <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 flex flex-col justify-center items-center gap-2">
+                        <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest text-center">Cognitive Load</span>
+                        <div className="text-xl font-black text-white">42%</div>
+                        <div className="w-full h-1 bg-slate-800 rounded-full mt-2"><div className="h-full bg-emerald-500 rounded-full w-[42%]"></div></div>
+                     </div>
+                     <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 flex flex-col justify-center items-center gap-2">
+                        <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest text-center">Micro-Stress</span>
+                        <div className="text-xl font-black text-emerald-400">Low</div>
+                        <div className="w-full h-1 bg-slate-800 rounded-full mt-2"><div className="h-full bg-emerald-400 rounded-full w-[20%]"></div></div>
+                     </div>
+                     <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 flex flex-col justify-center items-center gap-2">
+                        <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest text-center">Visual Focus</span>
+                        <div className="text-xl font-black text-white">Sharp</div>
+                        <div className="w-full h-1 bg-slate-800 rounded-full mt-2"><div className="h-full bg-teal-500 rounded-full w-[85%]"></div></div>
+                     </div>
+                     <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 flex flex-col justify-center items-center gap-2">
+                        <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest text-center">Edge IoT Nodes</span>
+                        <div className="text-xl font-black text-teal-400">3 Active</div>
+                        <div className="w-full h-1 bg-slate-800 rounded-full mt-2"><div className="h-full bg-teal-500 rounded-full w-[100%]"></div></div>
+                     </div>
+                  </div>
+                </div>
+
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-8">
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="p-2 bg-emerald-500/10 rounded-lg text-emerald-400">
+                      <Brain className="w-5 h-5" />
+                    </div>
+                    <h3 className="text-xl font-bold">Neuromorphic Adaptation</h3>
+                  </div>
+                  <div className="space-y-6">
+                     <p className="text-sm text-slate-400 leading-relaxed">
+                        Output complexity has been automatically modulated based on real-time cognitive state analysis. Delivery is optimized for <strong className="text-slate-200">Focused Flow State</strong>.
+                     </p>
+                     <div className="space-y-4">
+                        <div className="flex items-center justify-between text-xs">
+                           <span className="text-slate-400 font-bold uppercase tracking-widest">Vocabulary Density</span>
+                           <span className="text-emerald-400 font-mono">EXPANSIVE (85%)</span>
+                        </div>
+                        <div className="w-full h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
+                           <div className="h-full bg-gradient-to-r from-emerald-500 to-teal-500 w-[85%]"></div>
+                        </div>
+                        
+                        <div className="flex items-center justify-between text-xs">
+                           <span className="text-slate-400 font-bold uppercase tracking-widest">Structural Formatting</span>
+                           <span className="text-teal-400 font-mono">DEEP_DIVE (Level 4)</span>
+                        </div>
+                        <div className="w-full h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
+                           <div className="h-full bg-gradient-to-r from-teal-500 to-emerald-300 w-[70%]"></div>
+                        </div>
+                     </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Quantum Probability Map */}
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-8">
+                  <div className="flex items-center justify-between mb-8">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-emerald-500/10 rounded-lg text-emerald-400">
+                        <Network className="w-5 h-5" />
+                      </div>
+                      <h3 className="text-xl font-bold">Quantum-Inspired Probability Cloud</h3>
+                    </div>
+                  </div>
+                  <div className="relative w-full h-[400px] bg-slate-950 rounded-xl border border-slate-800 overflow-hidden flex items-center justify-center">
+                     <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.8),transparent_70%)]"></div>
+                     <div className="relative w-full h-full">
+                       {/* Faux Quantum Nodes */}
+                       {[...Array(30)].map((_, i) => (
+                         <motion.div
+                           key={`quantum-node-${i}`}
+                           className="absolute rounded-full"
+                           style={{
+                             width: Math.random() * 60 + 10 + 'px',
+                             height: Math.random() * 60 + 10 + 'px',
+                             backgroundColor: ['#10b981', '#34d399', '#059669', '#6ee7b7', '#047857'][Math.floor(Math.random() * 5)],
+                             filter: 'blur(8px)',
+                             top: Math.random() * 100 + '%',
+                             left: Math.random() * 100 + '%',
+                           }}
+                           animate={{
+                             top: [`${Math.random() * 100}%`, `${Math.random() * 100}%`, `${Math.random() * 100}%`],
+                             left: [`${Math.random() * 100}%`, `${Math.random() * 100}%`, `${Math.random() * 100}%`],
+                             scale: [1, 1.8, 1],
+                             opacity: [0.2, 0.8, 0.2]
+                           }}
+                           transition={{
+                             duration: Math.random() * 20 + 20,
+                             repeat: Infinity,
+                             ease: "linear",
+                             times: [0, 0.5, 1]
+                           }}
+                         />
+                       ))}
+                     </div>
+                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <div className="bg-slate-900/80 backdrop-blur-md px-8 py-6 rounded-3xl border border-slate-700/50 shadow-2xl flex flex-col items-center gap-3">
+                           <span className="text-emerald-400 font-bold uppercase tracking-[0.2em] text-xs flex items-center gap-2">
+                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Primary Timeline Locked
+                           </span>
+                           <span className="text-5xl font-black text-white">{result?.finalScore || 0}% <span className="text-sm text-slate-500 font-normal">viability</span></span>
+                        </div>
+                     </div>
+                     <div className="absolute bottom-4 left-4 text-[10px] font-mono text-slate-500 uppercase">
+                        Visualizing 1,024 multidimensional variable interactions
+                     </div>
+                     <div className="absolute top-4 right-4 flex items-center gap-2">
+                        <span className="px-2 py-1 bg-slate-900 border border-slate-800 rounded font-mono text-[10px] text-emerald-400">STATE: SUPERPOSITION</span>
+                     </div>
+                  </div>
               </div>
 
               {/* Strategic Roadmap */}
@@ -1099,16 +1449,16 @@ export default function App() {
                  </div>
                  <div className="grid grid-cols-1 md:grid-cols-3 gap-8 relative">
                     <div className="hidden md:block absolute top-[44px] left-0 w-full h-[2px] bg-slate-800 z-0"></div>
-                    {result.roadmap.map((step, idx) => (
-                      <div key={step.phase} className="relative z-10 flex flex-col items-center text-center">
-                         <div className="w-12 h-12 rounded-full bg-slate-950 border-4 border-slate-800 flex items-center justify-center font-black text-emerald-400 text-lg mb-4 shadow-xl">
+                    {(Array.isArray(result.roadmap) ? result.roadmap : []).map((step, idx) => (
+                      <div key={typeof step?.phase === 'string' ? step.phase : idx} className="relative z-10 flex flex-col items-center text-center">
+                         <div className="w-12 h-12 rounded-full bg-emerald-500/20 border-4 border-emerald-500/50 flex items-center justify-center font-black text-emerald-400 text-lg mb-4 shadow-xl shadow-emerald-500/20">
                             {idx + 1}
                          </div>
-                         <h4 className="text-sm font-bold text-white mb-2 uppercase tracking-widest">{step.phase}</h4>
-                         <p className="text-sm text-slate-300 mb-4">{step.action}</p>
+                         <h4 className="text-sm font-bold text-white mb-2 uppercase tracking-widest">{typeof step?.phase === 'string' ? step.phase : 'Phase ' + (idx + 1)}</h4>
+                         <p className="text-sm text-slate-300 mb-4">{typeof step?.action === 'string' ? step.action : JSON.stringify(step?.action || '')}</p>
                          <div className="w-full p-3 bg-slate-950/50 rounded-lg border border-slate-800 flex items-center gap-2">
                            <AlertCircle className="w-3 h-3 text-rose-400 shrink-0" />
-                           <span className="text-[10px] text-rose-400 font-medium text-left">CRITICAL RISK: {step.risk}</span>
+                           <span className="text-[10px] text-rose-400 font-medium text-left">CRITICAL RISK: {typeof step?.risk === 'string' ? step.risk : JSON.stringify(step?.risk || '')}</span>
                          </div>
                       </div>
                     ))}

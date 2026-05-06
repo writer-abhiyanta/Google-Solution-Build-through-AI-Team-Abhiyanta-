@@ -35,15 +35,24 @@ export interface StrategicStep {
 
 export interface EthicalCheck {
   framework: string;
+  frameworkDescription: string;
   alignment: 'High' | 'Medium' | 'Low';
   summary: string;
   analysis: string;
+}
+
+export interface GradeMetric {
+  category: string;
+  score: number;
+  maxScore: number;
+  feedback: string;
 }
 
 export interface DecisionResult {
   consensus: string;
   finalScore: number;
   overallAlignment: 'High' | 'Medium' | 'Low';
+  grades: GradeMetric[];
   swarm: SwarmOpinion[];
   biases: CognitiveBias[];
   xaiTree: DecisionNode;
