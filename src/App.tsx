@@ -54,7 +54,7 @@ import {
 import { analyzeDecision } from './services/gemini';
 import { DecisionResult, MicroAgent } from './types';
 import { MICRO_AGENTS, getIcon } from './constants';
-import { auth, signInWithGoogle, logout, saveDecision, getDecisions, saveFeedback, getUserProfile, onboardUser, onAuthStateChanged, User, createLiveSession, updateLiveSession, subscribeToLiveSession } from './services/firebase';
+import { auth, signInWithGoogle, signInAnonymouslyAuth, logout, saveDecision, getDecisions, saveFeedback, getUserProfile, onboardUser, onAuthStateChanged, User, createLiveSession, updateLiveSession, subscribeToLiveSession } from './services/firebase';
 import { exportToPDF, exportToCSV, exportToJSON } from './services/export';
 import { Download, FileText, Table, History, Database, Code, Filter, Calendar, SlidersHorizontal, Users, Share2, Copy, Check, Award } from 'lucide-react';
 
@@ -217,12 +217,13 @@ export default function App() {
         setUserProfile(profile);
       }
     } catch (error: any) {
-      if (error?.code === 'auth/unauthorized-domain') {
-        setAuthError("This domain is not authorized. If you deployed this app, add this URL to the Firebase Console -> Authentication -> Authorized Domains.");
-      } else if (error?.code === 'auth/popup-closed-by-user' || error?.code === 'auth/popup-blocked') {
-         setAuthError("Sign-in popup was blocked or closed. Please try again. If the issue persists in this preview, try opening the app in a new tab.");
+      if (error?.code === 'auth/operation-not-allowed' || error?.code === 'auth/admin-restricted-operation' || error?.message?.includes('offline') || error?.code === 'auth/unauthorized-domain') {
+         console.warn("Falling back to local-only mode due to Firebase Auth issues.");
+         setUser({ uid: 'local-guest-' + Math.random().toString(36).substring(7), email: null, isAnonymous: true } as any);
+         setUserProfile({ role: requestedRole });
+         // We do not set Auth Error because we want them to enter seamlessly.
       } else {
-        setAuthError(error.message || "An error occurred during sign in.");
+         setAuthError(error.message || "An error occurred during authentication.");
       }
       console.error(error);
     } finally {
@@ -360,8 +361,8 @@ export default function App() {
               className="space-y-6"
             >
               <h2 className="text-4xl lg:text-6xl font-bold leading-tight">
-                Decide with <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-teal-400">Precision.</span><br />
-                Think with <span className="text-transparent bg-clip-text bg-gradient-to-r from-teal-400 to-emerald-400">Clarity.</span>
+                Decide in <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-teal-400">neutral manner.</span><br />
+                Think with a <span className="text-transparent bg-clip-text bg-gradient-to-r from-teal-400 to-emerald-400">Neutral-IQ.</span>
               </h2>
               <p className="text-slate-400 text-lg leading-relaxed max-w-lg">
                 The world's first open-innovation platform for cross-disciplinary decision making. Powered by adversarial swarm intelligence.
@@ -972,16 +973,27 @@ export default function App() {
                   </p>
                   
                   {Array.isArray(result?.grades) && result.grades.length > 0 && (
-                    <div className="mt-10 border-t border-slate-800 pt-8">
+                    <motion.div 
+                      className="mt-10 border-t border-slate-800 pt-8"
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.5, ease: "easeOut" }}
+                    >
                        <div className="flex items-center gap-3 mb-6">
-                         <div className="p-2 bg-indigo-500/10 rounded-lg text-indigo-400">
+                         <div className="p-2 bg-emerald-500/10 rounded-lg text-emerald-400">
                            <Award className="w-5 h-5" />
                          </div>
-                         <h3 className="text-xl font-bold">AI Evaluation Scorecard</h3>
+                         <h3 className="text-xl font-bold text-emerald-400">AI Evaluation Scorecard</h3>
                        </div>
                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                           {result.grades.map((grade, idx) => (
-                             <div key={idx} className="bg-slate-950 border border-slate-800 rounded-xl p-5 hover:border-indigo-500/30 transition-colors">
+                             <motion.div 
+                               key={idx} 
+                               initial={{ opacity: 0, scale: 0.95 }}
+                               animate={{ opacity: 1, scale: 1 }}
+                               transition={{ duration: 0.4, delay: 0.1 * idx }}
+                               className="bg-slate-950 border border-slate-800 rounded-xl p-5 hover:border-emerald-500/30 transition-all hover:shadow-lg hover:shadow-emerald-500/10"
+                             >
                                 <div className="flex items-center justify-between mb-3">
                                    <div className="text-xs font-black text-slate-400 uppercase tracking-widest">{typeof grade?.category === 'string' ? grade.category : 'Metric'}</div>
                                    <div className="text-sm font-black text-white">
@@ -1000,10 +1012,10 @@ export default function App() {
                                 <p className="text-[11px] text-slate-400 leading-relaxed normal-case">
                                    {typeof grade?.feedback === 'string' ? grade.feedback : JSON.stringify(grade?.feedback || '')}
                                 </p>
-                             </div>
+                             </motion.div>
                           ))}
                        </div>
-                    </div>
+                    </motion.div>
                   )}
                 </div>
               </div>
@@ -1464,6 +1476,50 @@ export default function App() {
                     ))}
                  </div>
               </div>
+
+              {/* AI Follow-Up Questions */}
+              {Array.isArray(result?.followUpQuestions) && result.followUpQuestions.length > 0 && (
+                <motion.div 
+                   className="bg-slate-900 border border-slate-800 rounded-2xl p-8 mb-12 shadow-2xl relative overflow-hidden"
+                   initial={{ opacity: 0, y: 20 }}
+                   animate={{ opacity: 1, y: 0 }}
+                   transition={{ duration: 0.5, delay: 0.2 }}
+                >
+                   <div className="absolute top-0 left-0 w-1 h-full bg-emerald-500"></div>
+                   <div className="flex items-center gap-3 mb-8">
+                      <div className="p-2 bg-emerald-500/10 rounded-lg text-emerald-400">
+                        <MessageSquare className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h3 className="text-xl font-bold text-emerald-400">Deep Dive</h3>
+                        <p className="text-[10px] text-slate-500 uppercase tracking-widest mt-1">Suggested Follow-Up Analysis</p>
+                      </div>
+                   </div>
+                   <div className="flex flex-col gap-3">
+                      {result.followUpQuestions.map((q, idx) => (
+                        <motion.button
+                          key={idx}
+                          initial={{ opacity: 0, x: -20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ duration: 0.4, delay: 0.3 + (idx * 0.1) }}
+                          onClick={() => {
+                             setPrompt(q);
+                             window.scrollTo({ top: 0, behavior: 'smooth' });
+                          }}
+                          className="text-left w-full p-4 bg-slate-950 border border-slate-800 rounded-xl text-slate-300 font-medium hover:border-emerald-500/50 hover:bg-slate-900 transition-all group flex items-start gap-4 hover:shadow-lg hover:shadow-emerald-500/10"
+                        >
+                          <div className="mt-1 w-6 h-6 rounded-full bg-emerald-500/10 flex items-center justify-center text-[10px] text-emerald-400 font-black group-hover:bg-emerald-500 group-hover:text-white transition-colors">
+                            {idx + 1}
+                          </div>
+                          <span className="flex-1">{typeof q === 'string' ? q : JSON.stringify(q)}</span>
+                          <div className="text-slate-600 group-hover:text-emerald-400 transition-colors">
+                             →
+                          </div>
+                        </motion.button>
+                      ))}
+                   </div>
+                </motion.div>
+              )}
 
                {/* Feedback Mechanism */}
                <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-8 mb-12 backdrop-blur-sm">

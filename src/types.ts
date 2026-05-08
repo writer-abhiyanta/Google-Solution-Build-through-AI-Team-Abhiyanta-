@@ -64,6 +64,7 @@ export interface DecisionResult {
   };
   ethicalChecks: EthicalCheck[];
   roadmap: StrategicStep[];
+  followUpQuestions?: string[];
 }
 
 export interface MicroAgent {

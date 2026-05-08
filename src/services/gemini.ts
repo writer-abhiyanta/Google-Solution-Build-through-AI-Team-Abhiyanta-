@@ -121,9 +121,16 @@ const schema = {
         },
         required: ["phase", "action", "risk"]
       }
+    },
+    followUpQuestions: {
+      type: Type.ARRAY,
+      description: "Provide 3 insightful follow-up questions to ask the user to deepen the analysis or address blind spots.",
+      items: {
+        type: Type.STRING
+      }
     }
   },
-  required: ["consensus", "finalScore", "overallAlignment", "swarm", "biases", "grades", "xaiTree", "simulation", "ethicalChecks", "roadmap"]
+  required: ["consensus", "finalScore", "overallAlignment", "swarm", "biases", "grades", "xaiTree", "simulation", "ethicalChecks", "roadmap", "followUpQuestions"]
 };
 
 export async function analyzeDecision(
@@ -151,6 +158,7 @@ export async function analyzeDecision(
     5. Simulation: Provide a numerical prediction sequence (e.g., 5-6 points) and a text prediction of outcomes over time.
     6. Ethical Alignment: Check the decision against 2 different ethical frameworks relevant to the domain. Provide a clear alignment status (High, Medium, Low) and a one-sentence summary for each.
     7. Strategic Roadmap: Provide 3 clear sequential phases for implementation.
+    8. Follow-up Questions: Generate 3 highly insightful follow-up questions to help the user dig deeper into the problem or uncover blindspots.
     
     If the slider is high on Intuition, use more metaphorical and philosophical reasoning.
     If the slider is high on Logic, use strict evidence and peer-reviewed style reasoning.
