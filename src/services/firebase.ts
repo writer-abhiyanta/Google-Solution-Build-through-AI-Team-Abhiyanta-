@@ -90,15 +90,16 @@ export const saveDecision = async (userId: string, prompt: string, agentId: stri
   }
 };
 
-export const createLiveSession = async (userId: string, prompt: string, agentId: string, intuition: number) => {
+export const createLiveSession = async (userId: string, prompt: string, agentId: string, intuition: number, result: any = null) => {
   try {
     const newDocRef = doc(collection(db, 'sessions'));
+    const safeResult = result === undefined ? null : JSON.parse(JSON.stringify(result));
     await setDoc(newDocRef, {
       creatorId: userId,
       prompt,
       agentId,
       intuition,
-      result: null,
+      result: safeResult,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -112,8 +113,9 @@ export const createLiveSession = async (userId: string, prompt: string, agentId:
 export const updateLiveSession = async (sessionId: string, data: { prompt?: string, agentId?: string, intuition?: number, result?: any }) => {
   try {
     const docRef = doc(db, 'sessions', sessionId);
+    const safeData = JSON.parse(JSON.stringify(data));
     await updateDoc(docRef, {
-      ...data,
+      ...safeData,
       updatedAt: serverTimestamp(),
     });
   } catch (error) {

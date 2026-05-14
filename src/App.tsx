@@ -54,9 +54,12 @@ import {
 import { analyzeDecision } from './services/gemini';
 import { DecisionResult, MicroAgent } from './types';
 import { MICRO_AGENTS, getIcon } from './constants';
-import { auth, signInWithGoogle, signInAnonymouslyAuth, logout, saveDecision, getDecisions, saveFeedback, getUserProfile, onboardUser, onAuthStateChanged, User, createLiveSession, updateLiveSession, subscribeToLiveSession } from './services/firebase';
+import { auth, signInWithGoogle, signInAnonymouslyAuth, logout, saveDecision, getDecisions, saveFeedback, getUserProfile, onboardUser, onAuthStateChanged, createLiveSession, updateLiveSession, subscribeToLiveSession } from './services/firebase';
+import { User } from 'firebase/auth';
 import { exportToPDF, exportToCSV, exportToJSON } from './services/export';
 import { Download, FileText, Table, History, Database, Code, Filter, Calendar, SlidersHorizontal, Users, Share2, Copy, Check, Award } from 'lucide-react';
+
+import { OnboardingTour } from './components/OnboardingTour';
 
 import { XAITree } from './components/XAITree';
 
@@ -141,15 +144,21 @@ export default function App() {
     };
   }, []);
 
+  // Initialize session from URL once
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const session = params.get('session');
-    
-    let unsubSession: (() => void) | undefined;
-    
     if (session) {
       setLiveSessionId(session);
-      unsubSession = subscribeToLiveSession(session, (data) => {
+    }
+  }, []);
+
+  // Handle session subscription when ID or user changes
+  useEffect(() => {
+    let unsubSession: (() => void) | undefined;
+    
+    if (liveSessionId && user) {
+      unsubSession = subscribeToLiveSession(liveSessionId, (data) => {
         if (!data) return; // session might be deleted
         // Flag to prevent looping back updates we just received
         isRemoteUpdateRef.current = true;
@@ -173,7 +182,7 @@ export default function App() {
     return () => {
       if (unsubSession) unsubSession();
     };
-  }, [user]);
+  }, [liveSessionId, user]);
 
   // Sync back local changes if in session
   const debouncedSync = React.useMemo(() => {
@@ -182,7 +191,8 @@ export default function App() {
         if (isRemoteUpdateRef.current) return;
         clearTimeout(timeout);
         timeout = setTimeout(() => {
-          updateLiveSession(sessionUrlId, payload);
+          const safePayload = Object.fromEntries(Object.entries(payload).filter(([_, v]) => v !== undefined));
+          updateLiveSession(sessionUrlId, safePayload);
         }, 300);
      };
   }, []);
@@ -473,6 +483,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-emerald-500 selection:text-white">
+      <OnboardingTour />
       {/* Sidebar - Micro-Agent Marketplace */}
       <aside 
         className={`fixed top-0 left-0 z-40 h-screen transition-transform ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} w-72 bg-slate-900 border-r border-slate-800 shadow-2xl flex flex-col`}
@@ -487,7 +498,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
+        <div className="tour-agent-marketplace flex-1 overflow-y-auto py-4 px-3 space-y-1">
           <div className="px-3 py-2 text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center justify-between">
             <span>Marketplace</span>
             <div className="group relative">
@@ -525,7 +536,7 @@ export default function App() {
           <div className="pt-4 mt-4 border-t border-slate-800">
              <button
                 onClick={() => setShowHistory(!showHistory)}
-                className={`w-full flex items-center gap-3 px-3 py-3 rounded-lg transition-all duration-200 group ${
+                className={`tour-history w-full flex items-center gap-3 px-3 py-3 rounded-lg transition-all duration-200 group ${
                   showHistory 
                     ? 'bg-emerald-600/10 text-emerald-400 border border-emerald-500/30' 
                     : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100 border border-transparent'
@@ -587,14 +598,14 @@ export default function App() {
             </div>
           </div>
           
-          <div className="flex items-center gap-6 self-end md:self-auto no-underline">
+          <div className="tour-live-session flex items-center gap-6 self-end md:self-auto no-underline">
             <div className="flex items-center gap-2 px-4 py-2 bg-slate-900 border border-slate-800 rounded-full text-[10px] font-black">
               <Activity className="w-3 h-3 text-emerald-400 animate-pulse" />
               SENSORS: <span className="text-emerald-400">NOMINAL</span>
             </div>
             {liveSessionId && (
-              <div className="flex items-center gap-2 px-4 py-2 bg-indigo-900 border border-indigo-500 rounded-full text-[10px] font-black text-indigo-200">
-                <Users className="w-3 h-3 text-indigo-400 animate-pulse" />
+              <div className="flex items-center gap-2 px-4 py-2 bg-emerald-900 border border-emerald-500 rounded-full text-[10px] font-black text-emerald-200">
+                <Users className="w-3 h-3 text-emerald-400 animate-pulse" />
                 <span>LIVE SESSION ACTIVE</span>
               </div>
             )}
@@ -602,7 +613,7 @@ export default function App() {
               <button
                 onClick={async () => {
                    if (!user) return;
-                   const id = await createLiveSession(user.uid, prompt, selectedAgent.id, intuition);
+                   const id = await createLiveSession(user.uid, prompt, selectedAgent.id, intuition, result);
                    if (id) {
                      setLiveSessionId(id);
                      setIsCreator(true);
@@ -611,7 +622,7 @@ export default function App() {
                      window.history.replaceState({}, '', url.toString());
                    }
                 }}
-                className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-indigo-600 border border-slate-700 hover:border-indigo-400 rounded-full text-[10px] font-black transition-colors"
+                className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-emerald-600 border border-slate-700 hover:border-emerald-400 rounded-full text-[10px] font-black transition-colors"
                 title="Start a collaborative session"
               >
                 <Share2 className="w-3 h-3" />
@@ -626,7 +637,7 @@ export default function App() {
                    setCopiedUrl(true);
                    setTimeout(() => setCopiedUrl(false), 2000);
                 }}
-                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 border border-indigo-400 rounded-full text-[10px] font-black text-white transition-colors"
+                className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 border border-emerald-400 rounded-full text-[10px] font-black text-white transition-colors"
               >
                 {copiedUrl ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
                 {copiedUrl ? 'COPIED LINK' : 'SHARE LINK'}
@@ -782,7 +793,7 @@ export default function App() {
           <div className="lg:col-span-8 space-y-6">
             <div className="relative group">
               <div className="absolute -inset-1 bg-gradient-to-r from-emerald-500 to-teal-400 rounded-2xl blur opacity-25 group-hover:opacity-40 transition duration-1000 group-hover:duration-200"></div>
-              <div className="relative bg-slate-900 rounded-xl border border-slate-700/50 p-6">
+              <div className="tour-decision-parameters relative bg-slate-900 rounded-xl border border-slate-700/50 p-6">
                 <div className="flex items-center gap-3 mb-4">
                   <div className="p-2 bg-emerald-500/10 rounded-lg text-emerald-400">
                     <Layers className="w-5 h-5" />
@@ -823,7 +834,7 @@ export default function App() {
                       max="100" 
                       value={intuition}
                       onChange={(e) => setIntuition(parseInt(e.target.value))}
-                      className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                      className="tour-intuition-slider w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
                     />
                     <div className="text-[10px] text-slate-500 text-center uppercase tracking-widest">
                        Setting: {intuition}% Intuition Mode
@@ -833,7 +844,7 @@ export default function App() {
                   <button
                     onClick={handleAnalyze}
                     disabled={loading || !prompt.trim()}
-                    className="px-8 py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:hover:bg-emerald-600 rounded-xl font-bold text-white shadow-lg shadow-emerald-500/30 transition-all flex items-center gap-3 active:scale-95"
+                    className="tour-submit px-8 py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:hover:bg-emerald-600 rounded-xl font-bold text-white shadow-lg shadow-emerald-500/30 transition-all flex items-center gap-3 active:scale-95"
                   >
                     {loading ? (
                       <span className="animate-spin rounded-full h-4 w-4 border-2 border-white/20 border-t-white" />
